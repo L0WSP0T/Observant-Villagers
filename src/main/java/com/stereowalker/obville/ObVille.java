@@ -8,6 +8,7 @@ import java.util.function.Supplier;
 import com.stereowalker.obville.client.renderer.entity.VillageChiefModel;
 import com.stereowalker.obville.client.renderer.entity.VillagerChiefRenderer;
 import com.stereowalker.obville.compat.GuardVillagersCompat;
+import com.stereowalker.obville.compat.RecruitsCompat;
 import com.stereowalker.obville.config.ClientConfig;
 import com.stereowalker.obville.config.ExtraLinesConfig;
 import com.stereowalker.obville.config.ModConfig;
@@ -101,6 +102,10 @@ public class ObVille extends MinecraftMod implements IPacketHolder {
 
 	public static boolean hasVillagerNames() {
 		return ModList.get().isLoaded("villagernames");
+	}
+
+	public static boolean hasRecruits() {
+		return ModList.get().isLoaded("recruits");
 	}
 
 	public ObVille() 
@@ -209,6 +214,10 @@ public class ObVille extends MinecraftMod implements IPacketHolder {
 		if (hasGuardVillagers()) {
 			GuardVillagersCompat.tryToAnger(player, angerOnlyIfCanSee, guardians, vills);
 		}
+		List<LivingEntity> recruits = new ArrayList<LivingEntity>();
+		if (hasRecruits()) {
+			RecruitsCompat.tryToAnger(player, angerOnlyIfCanSee, recruits, vills);
+		}
 		Crime crimeCommited = null;
 		if (crime != null) crimeCommited = crime.get();
 		if (!player.hasEffect(MobEffects.INVISIBILITY)) {
@@ -220,8 +229,9 @@ public class ObVille extends MinecraftMod implements IPacketHolder {
 			List<LivingEntity> b = new ArrayList<LivingEntity>();
 			b.addAll(vills);
 			b.addAll(guardians);
+			b.addAll(recruits);
 			List<IronGolem> list2 = player.level.getEntitiesOfClass(IronGolem.class, player.getBoundingBox().inflate(16.0));
-			list2.stream().filter(golem -> !angerOnlyIfCanSee || isLookingAtPlayer(golem, player) || BehaviorUtils.canSee(golem, player) || vills.size() > 0).forEach(golem -> {
+			list2.stream().filter(golem -> !angerOnlyIfCanSee || isLookingAtPlayer(golem, player) || BehaviorUtils.canSee(golem, player) || vills.size() > 0 || recruits.size() > 0).forEach(golem -> {
 				b.add(golem);
 			});
 			if (!b.isEmpty()) {
@@ -232,14 +242,12 @@ public class ObVille extends MinecraftMod implements IPacketHolder {
 
 					b.forEach(liv -> {
 						if (hasGuardVillagers()) {
-							//							if (liv.getTags().contains("villagernames.named"))
-							//								ObVille.getInstance().channel.sendTo(new ClientboundVillagerMessagePacket(liv.getCustomName().copy().append(": ").append(new TranslatableComponent("I found a bandit")), player.getUUID()), ((ServerPlayer)player).connection.getConnection(), NetworkDirection.PLAY_TO_CLIENT);
-							//							else
-							//								ObVille.getInstance().channel.sendTo(new ClientboundVillagerMessagePacket(liv.getName().copy().append(": ").append(new TranslatableComponent("I found a bandit")), player.getUUID()), ((ServerPlayer)player).connection.getConnection(), NetworkDirection.PLAY_TO_CLIENT);
 							GuardVillagersCompat.target(liv, player);
 						}
+						if (hasRecruits()) {
+							RecruitsCompat.target(liv, player);
+						}
 						if (liv instanceof IronGolem golem) {
-							//							ObVille.getInstance().channel.sendTo(new ClientboundVillagerMessagePacket(liv.getName().copy().append(": ").append(new TranslatableComponent("I found a bandit")), player.getUUID()), ((ServerPlayer)player).connection.getConnection(), NetworkDirection.PLAY_TO_CLIENT);
 							golem.setTarget(player);
 						}
 					});
@@ -249,6 +257,11 @@ public class ObVille extends MinecraftMod implements IPacketHolder {
 					if (guardians.size() >= 1) {
 						if (hasGuardVillagers()) {
 							GuardVillagersCompat.wit(player, guardians, crimeCommited);
+						}
+					}
+					if (recruits.size() >= 1) {
+						if (hasRecruits()) {
+							RecruitsCompat.wit(player, recruits, crimeCommited);
 						}
 					}
 					if (vills.size() == 1) {
@@ -266,6 +279,9 @@ public class ObVille extends MinecraftMod implements IPacketHolder {
 						b.forEach(liv -> {
 							if (hasGuardVillagers()) {
 								GuardVillagersCompat.target(liv, player);
+							}
+							if (hasRecruits()) {
+								RecruitsCompat.target(liv, player);
 							}
 						});
 					}

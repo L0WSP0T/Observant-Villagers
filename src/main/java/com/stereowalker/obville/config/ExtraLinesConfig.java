@@ -301,4 +301,23 @@ public class ExtraLinesConfig implements ConfigObject {
 			"Here is your reward! Keep it up.",
 			"This is your reward, thanks for putting them down."
 			);
+
+	@UnionConfig.Entry(name = "Village Leader Greeting", type = Type.COMMON)
+	@UnionConfig.Comment(comment = {"What the village leader says once to players who have not spoken to them yet"})
+	public String leader_greeting = "Hi? Look, as long as you don’t cause trouble here you will never need to talk unless you take on bounties. Either way, if you ever need to find me but can’t simply ring a bell and I will become highlighted for you.";
+
+	@UnionConfig.Entry(name = "Trapped Villager Lines", type = Type.COMMON)
+	@UnionConfig.Comment(comment = {"What a villager says when unable to navigate and refusing to trade"})
+	public List<String> trapped_lines = Lists.newArrayList(
+			"I can't move! Let me out or I won't trade.",
+			"I'm trapped here, I refuse to trade with you!",
+			"Let me out! I won't do business while trapped.",
+			"I can't navigate like this. Free me first if you want to trade."
+			);
+
+	@UnionConfig.Entry(name = "Recruit Reporting Crime Lines", type = Type.COMMON)
+	@UnionConfig.Comment(comment = {"What an unhired recruit says when witnessing a crime"})
+	public List<String> recruit_reporting = Lists.newArrayList(
+			"I'm reporting that."
+			);
 }

@@ -99,4 +99,12 @@ public class ReputationAmountConfig implements ConfigObject {
 	@UnionConfig.Entry(name = "Killing Village Leaders", type = Type.COMMON)
 	@UnionConfig.Comment(comment = {"How much reputation is gained or lost for killing village leaders"})
 	public int killing_chiefs = -10;
+
+	@UnionConfig.Entry(name = "Undead Kills For Reputation", type = Type.COMMON)
+	@UnionConfig.Comment(comment = {"Number of undead monsters killed inside the village required to gain +1 reputation"})
+	public int undead_kills_for_rep = 3;
+
+	@UnionConfig.Entry(name = "Crop Replant Grace Ticks", type = Type.COMMON)
+	@UnionConfig.Comment(comment = {"Number of ticks (20 ticks = 1 second) a player has to replant seeds on broken crop farmland before getting penalized"})
+	public int crop_replant_grace_ticks = 200;
 }

@@ -1,9 +1,13 @@
 package com.stereowalker.obville.mixins;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.UUID;
 
 import org.spongepowered.asm.mixin.Mixin;
@@ -24,6 +28,8 @@ import com.stereowalker.obville.interfaces.IVillager;
 import com.stereowalker.obville.network.protocol.game.ClientboundSoundPacket;
 import com.stereowalker.obville.network.protocol.game.ClientboundVillagerMessagePacket;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
@@ -34,6 +40,7 @@ import net.minecraft.util.Tuple;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.npc.AbstractVillager;
 import net.minecraft.world.entity.npc.Villager;
@@ -57,6 +64,7 @@ public abstract class VillagerMixin extends AbstractVillager implements Villager
 	private Map<UUID, Tuple<Law, Integer>> recentlyWitnessedCrime = new HashMap<>();
 	private Map<UUID, Integer> trustTimer = new HashMap<>();
 	private Map<UUID, Integer> recentlyTakenBribe = new HashMap<>();
+	private Map<UUID, Integer> trappedTradeAttempts = new HashMap<>();
 	private String tradesWithDistrustedPlayer = "";
 	private boolean decidedOnTradingWithDistrusted = false;
 	private boolean hasRewardedCustomer = false;
@@ -145,6 +153,13 @@ public abstract class VillagerMixin extends AbstractVillager implements Villager
 		this.tradesWithDistrustedPlayer = pCompound.getString("TradesWithDistrustedPlayer");
 		this.hasRewardedCustomer = pCompound.getBoolean("HasRewardedCustomer");
 		this.affectedByWeary = pCompound.getInt("AffectedByWeary");
+
+		ListTag listTrapped = pCompound.getList("TrappedTradeAttempts", 10);
+		this.trappedTradeAttempts = new HashMap<>();
+		for (int i = 0; i < listTrapped.size(); i++) {
+			CompoundTag tag = listTrapped.getCompound(i);
+			this.trappedTradeAttempts.put(NbtUtils.loadUUID(tag.get("UUID")), tag.getInt("Attempts"));
+		}
 	}
 
 	@Inject(method = "addAdditionalSaveData", at = @At("TAIL"))
@@ -207,6 +222,15 @@ public abstract class VillagerMixin extends AbstractVillager implements Villager
 		pCompound.putString("TradesWithDistrustedPlayer", this.tradesWithDistrustedPlayer);
 		pCompound.putBoolean("HasRewardedCustomer", this.hasRewardedCustomer);
 		pCompound.putInt("AffectedByWeary", this.affectedByWeary);
+
+		ListTag listTrapped = new ListTag();
+		trappedTradeAttempts.forEach((player, attempts) -> {
+			CompoundTag tag = new CompoundTag();
+			tag.put("UUID", NbtUtils.createUUID(player));
+			tag.putInt("Attempts", attempts);
+			listTrapped.add(tag);
+		});
+		pCompound.put("TrappedTradeAttempts", listTrapped);
 	}
 
 	@Inject(method = "mobInteract", at = @At("HEAD"), cancellable = true)
@@ -229,6 +253,27 @@ public abstract class VillagerMixin extends AbstractVillager implements Villager
 				cir.setReturnValue(InteractionResult.sidedSuccess(this.level.isClientSide));
 				break;
 			default:
+				if (isVillagerTrapped()) {
+					if (!level.isClientSide) {
+						int attempts = trappedTradeAttempts.getOrDefault(pPlayer.getUUID(), 0) + 1;
+						trappedTradeAttempts.put(pPlayer.getUUID(), attempts);
+						setUnhappy();
+
+						List<String> lines = ObVille.LINES_CONFIG.trapped_lines;
+						String line = (lines != null && !lines.isEmpty()) ? lines.get(this.random.nextInt(lines.size())) : "I can't move! Let me out or I won't trade.";
+						new ClientboundVillagerMessagePacket(fromVillager(new TextComponent(line)), pPlayer.getUUID()).send((ServerPlayer)pPlayer);
+
+						if (attempts >= 3) {
+							modded.getData().incrementReputation(-1);
+							ObVille.getInstance().channel.sendTo(new ClientboundSoundPacket(false, pPlayer.getUUID()), ((ServerPlayer)pPlayer).connection.getConnection(), NetworkDirection.PLAY_TO_CLIENT);
+						}
+					}
+					cir.setReturnValue(InteractionResult.sidedSuccess(this.level.isClientSide));
+					return;
+				} else {
+					trappedTradeAttempts.remove(pPlayer.getUUID());
+				}
+
 				if (!level.isClientSide && modded.getData().IsWeary())
 					level.broadcastEntityEvent((Villager)(Object)this, (byte)13); //Does the angry particles
 				if (modded.getData().IsDistrusted()) {
@@ -418,6 +463,43 @@ public abstract class VillagerMixin extends AbstractVillager implements Villager
 	@Override
 	public Villager me() {
 		return (Villager)(Object)this;
+	}
+
+	private boolean isVillagerTrapped() {
+		if (this.isPassenger()) return true;
+
+		BlockPos start = this.blockPosition();
+		Set<BlockPos> visited = new HashSet<>();
+		Queue<BlockPos> queue = new ArrayDeque<>();
+		queue.add(start);
+		visited.add(start);
+
+		int maxWalkable = 3;
+		while (!queue.isEmpty()) {
+			BlockPos current = queue.poll();
+			if (visited.size() > maxWalkable) {
+				return false;
+			}
+			for (Direction dir : Direction.Plane.HORIZONTAL) {
+				BlockPos next = current.relative(dir);
+				for (int dy : new int[]{0, 1, -1}) {
+					BlockPos testPos = next.above(dy);
+					if (visited.contains(testPos)) continue;
+
+					BlockState feetState = this.level.getBlockState(testPos);
+					BlockState headState = this.level.getBlockState(testPos.above());
+					BlockState floorState = this.level.getBlockState(testPos.below());
+
+					if (feetState.getCollisionShape(this.level, testPos).isEmpty() 
+							&& headState.getCollisionShape(this.level, testPos.above()).isEmpty() 
+							&& !floorState.getCollisionShape(this.level, testPos.below()).isEmpty()) {
+						visited.add(testPos);
+						queue.add(testPos);
+					}
+				}
+			}
+		}
+		return visited.size() <= maxWalkable;
 	}
 
 	//For the chief

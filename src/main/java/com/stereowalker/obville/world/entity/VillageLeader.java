@@ -144,36 +144,20 @@ public class VillageLeader extends Villager implements IPlayerFollower, IInvesti
 		ItemStack itemstack = pPlayer.getItemInHand(pHand);
 
 		if (currentVillage >= 0 && itemstack.getItem() != Items.VILLAGER_SPAWN_EGG && this.isAlive() && !this.isTrading() && !this.isSleeping() && !pPlayer.isSecondaryUseActive()) {
-			boolean flag = true;
-			if (pPlayer instanceof ServerPlayer serv) {
-				OVModData data = ((IModdedEntity)serv).getData();
-				flag = data.IsWelcome() || data.IsNeutral();
-
-				if (data.crimesCommitedAt(currentVillage).size() > 0) flag = false;
-				if (data.reputAtNoSave(currentVillage).hasSpokenToLeader) flag = false;
-			}
-			if (pHand == InteractionHand.MAIN_HAND) {
-				if (flag && !this.level.isClientSide) {
-					this.setUnhappy();
-				}
-
-				//				pPlayer.awardStat(Stats.TALKED_TO_VILLAGER);
-			}
-
-			System.out.println("Check Plkayer");
 			if (pPlayer instanceof ServerPlayer serv) {
 				if (ObVille.isPotentialBandit(serv)) {
 					new ClientboundVillagerMessagePacket(fromVillager(new TranslatableComponent("obville.chat.no_bandits")), pPlayer.getUUID()).send((ServerPlayer)pPlayer);
 					return InteractionResult.sidedSuccess(this.level.isClientSide);
 				}
-				else if (flag) {
-					pPlayer.displayClientMessage(new TranslatableComponent("obville.messages.not_now"), true);
-					return InteractionResult.sidedSuccess(this.level.isClientSide);
-				} 
-				else {
-					this.startTrading(pPlayer);
-					return InteractionResult.sidedSuccess(this.level.isClientSide);
+
+				OVModData data = ((IModdedEntity)serv).getData();
+				if (!data.reputAt(currentVillage).hasHeardLeaderGreeting) {
+					data.reputAt(currentVillage).hasHeardLeaderGreeting = true;
+					new ClientboundVillagerMessagePacket(fromVillager(new TextComponent(ObVille.LINES_CONFIG.leader_greeting)), pPlayer.getUUID()).send((ServerPlayer)pPlayer);
 				}
+
+				this.startTrading(pPlayer);
+				return InteractionResult.sidedSuccess(this.level.isClientSide);
 			}
 		} else {
 			return super.mobInteract(pPlayer, pHand);
@@ -202,11 +186,14 @@ public class VillageLeader extends Villager implements IPlayerFollower, IInvesti
 
 	private void startTrading(Player pPlayer) {
 
-		Component title = new TextComponent("Redemption Trades");
+		Component title = new TextComponent("Village Leader");
 		if (pPlayer != null) {
 			OVModData data = ((IModdedEntity)pPlayer).getData();
-			data.reputAtNoSave(currentVillage).hasSpokenToLeader = true;
-			title = new TextComponent("Redemption Trades ("+data.getReputation()+")");
+			data.reputAt(currentVillage).hasSpokenToLeader = true;
+			if (data.getReputation() < 0)
+				title = new TextComponent("Redemption Trades ("+data.getReputation()+")");
+			else
+				title = new TextComponent("Village Leader ("+data.getReputation()+")");
 		}
 		if (ObVille.hasVillagerNames()) {
 			VillagerNamesCompat.overrideMerchantScreen(title, this);
@@ -249,8 +236,10 @@ public class VillageLeader extends Villager implements IPlayerFollower, IInvesti
 					offers.add(new MerchantOffer(new ItemStack(Items.EMERALD, 40), 
 							Crime.forgive(1, "generic", currentVillage), -repleftToRecover, 0, 1));
 				}
-				if (this.level instanceof ServerLevel server) {
-					PlacedBlocks pb = PlacedBlocks.getInstance(server);
+			}
+			if (this.level instanceof ServerLevel server) {
+				PlacedBlocks pb = PlacedBlocks.getInstance(server);
+				if (pb.villages.containsKey(currentVillage)) {
 					for (ItemStack stack : pb.villages.get(currentVillage).generatedBounties) {
 						offers.add(new MerchantOffer(stack, new ItemStack(Items.EMERALD, 20), 1, 0, 1));
 					}

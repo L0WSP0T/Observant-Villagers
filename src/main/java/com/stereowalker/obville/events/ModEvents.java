@@ -1,7 +1,11 @@
 package com.stereowalker.obville.events;
 
+import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 import javax.annotation.Nullable;
 
@@ -13,13 +17,16 @@ import com.stereowalker.obville.compat.FarmersDelightCompat;
 import com.stereowalker.obville.compat.GuardVillagersCompat;
 import com.stereowalker.obville.compat.MoreCTCompat;
 import com.stereowalker.obville.compat.QuarkCompat;
+import com.stereowalker.obville.compat.RecruitsCompat;
 import com.stereowalker.obville.compat.WaystonesCompat;
 import com.stereowalker.obville.core.ModdedStats;
+import com.stereowalker.obville.dat.Reput;
 import com.stereowalker.obville.dat.VillageData;
 import com.stereowalker.obville.interfaces.IGeneratableBlockEntity;
 import com.stereowalker.obville.interfaces.IModdedEntity;
 import com.stereowalker.obville.interfaces.ISheep;
 import com.stereowalker.obville.network.protocol.game.ClientboundNBTPacket;
+import com.stereowalker.obville.network.protocol.game.ClientboundSoundPacket;
 import com.stereowalker.obville.world.PlacedBlocks;
 import com.stereowalker.obville.world.entity.VillageLeader;
 
@@ -30,8 +37,12 @@ import net.minecraft.core.Registry;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.TagKey;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.MobType;
 import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.entity.raid.Raider;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.AbstractCauldronBlock;
@@ -46,10 +57,12 @@ import net.minecraft.world.level.block.HayBlock;
 import net.minecraft.world.level.block.HopperBlock;
 import net.minecraft.world.level.block.MelonBlock;
 import net.minecraft.world.level.block.PumpkinBlock;
+import net.minecraft.world.level.block.StemBlock;
 import net.minecraft.world.level.block.entity.BedBlockEntity;
 import net.minecraft.world.level.block.entity.BellBlockEntity;
 import net.minecraft.world.level.levelgen.feature.ConfiguredStructureFeature;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
+import net.minecraftforge.event.entity.living.LivingSpawnEvent;
 import net.minecraftforge.event.entity.living.LivingEvent.LivingUpdateEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerSleepInBedEvent;
@@ -61,6 +74,31 @@ import net.minecraftforge.network.NetworkDirection;
 
 @EventBusSubscriber
 public class ModEvents {
+
+	public static class PendingCropBreak {
+		public final BlockPos pos;
+		public final UUID playerUUID;
+		public final int villageId;
+		public int ticksLeft;
+		public final Supplier<Crime> crimeSupplier;
+
+		public PendingCropBreak(BlockPos pos, UUID playerUUID, int villageId, int ticksLeft, Supplier<Crime> crimeSupplier) {
+			this.pos = pos;
+			this.playerUUID = playerUUID;
+			this.villageId = villageId;
+			this.ticksLeft = ticksLeft;
+			this.crimeSupplier = crimeSupplier;
+		}
+	}
+
+	public static final List<PendingCropBreak> PENDING_CROPS = new ArrayList<>();
+
+	@SubscribeEvent
+	public static void onSpecialSpawn(LivingSpawnEvent.SpecialSpawn event) {
+		if (event.getSpawnReason() == MobSpawnType.SPAWNER) {
+			event.getEntityLiving().addTag("obville:from_spawner");
+		}
+	}
 
 	@SubscribeEvent
 	public static void on(PlayerSleepInBedEvent event) {
@@ -100,6 +138,26 @@ public class ModEvents {
 						ent.getData().reputAtNoSave(village).droppedBounty = true;
 					}
 				});
+			} else {
+				LivingEntity victim = event.getEntityLiving();
+				IModdedEntity ent = (IModdedEntity)spl;
+				int village = ent.getData().currentVillage();
+				if (village < 0) {
+					village = ObVille.determineVillage(spl.getLevel(), victim.blockPosition());
+				}
+				if (village >= 0 && !victim.getTags().contains("obville:from_spawner")) {
+					boolean isRaidMob = victim instanceof Raider raider && (raider.hasActiveRaid() || (spl.getLevel().getRaidAt(victim.blockPosition()) != null && spl.getLevel().getRaidAt(victim.blockPosition()).isActive()));
+					if (!isRaidMob && victim.getMobType() == MobType.UNDEAD) {
+						Reput rep = ent.getData().reputAt(village);
+						rep.undeadKills++;
+						if (rep.undeadKills >= ObVille.REPUTATION_CONFIG.undead_kills_for_rep) {
+							rep.undeadKills = 0;
+							ent.getData().incrementReputation(1);
+							ObVille.getInstance().channel.sendTo(new ClientboundSoundPacket(true, spl.getUUID()), spl.connection.getConnection(), NetworkDirection.PLAY_TO_CLIENT);
+							VillageData.invalidateGounty(spl);
+						}
+					}
+				}
 			}
 		}
 	}
@@ -138,6 +196,9 @@ public class ModEvents {
 	@SubscribeEvent
 	public static void on(BlockEvent.EntityPlaceEvent event) {
 		if (event.getWorld() instanceof ServerLevel server && event.getEntity() instanceof IModdedEntity mod) {
+			if (event.getState().getBlock() instanceof CropBlock || event.getState().getBlock() instanceof StemBlock) {
+				PENDING_CROPS.removeIf(p -> p.pos.equals(event.getPos()));
+			}
 			PlacedBlocks pb = PlacedBlocks.getInstance(server);
 			Runnable r = () -> {
 				pb.playerPlacedBlock(event.getPos());
@@ -224,24 +285,29 @@ public class ModEvents {
 				} else {
 					Block block = event.getState().getBlock();
 					if (event.getState().getBlock() instanceof CropBlock crop) {
-						if (ent.getData().isWatchedForBreakingCrops()) {
-							ObVille.upsetNearby(spl, spl.blockPosition(), true, 0, ()->
-							{
-								if (FarmersDelightCompat.plantFromMod(crop))
-									return FarmersDelightCompat.equivalentCrime(crop);
-								else if (crop == Blocks.CARROTS)
-									return new Crime(Laws.BREAKING_CARROT, new ItemStack(Items.CARROT, 2));
-								else if (crop == Blocks.POTATOES)
-									return new Crime(Laws.BREAKING_POTATO, new ItemStack(Items.POTATO, 2));
-								else if (crop == Blocks.BEETROOTS)
-									return new Crime(Laws.BREAKING_BEETROOT, 
-											new ItemStack(Items.BEETROOT, 2), new ItemStack(Items.BEETROOT_SEEDS, 1));
-								else
-									return new Crime(Laws.BREAKING_CROPS, new ItemStack(Items.WHEAT, 2), new ItemStack(Items.WHEAT_SEEDS, 1));
-							});
-						}
-						ent.getData().watchForBreakingCrops();
+						Supplier<Crime> crimeSupplier = () -> {
+							if (FarmersDelightCompat.plantFromMod(crop))
+								return FarmersDelightCompat.equivalentCrime(crop);
+							else if (crop == Blocks.CARROTS)
+								return new Crime(Laws.BREAKING_CARROT, new ItemStack(Items.CARROT, 2));
+							else if (crop == Blocks.POTATOES)
+								return new Crime(Laws.BREAKING_POTATO, new ItemStack(Items.POTATO, 2));
+							else if (crop == Blocks.BEETROOTS)
+								return new Crime(Laws.BREAKING_BEETROOT, 
+										new ItemStack(Items.BEETROOT, 2), new ItemStack(Items.BEETROOT_SEEDS, 1));
+							else
+								return new Crime(Laws.BREAKING_CROPS, new ItemStack(Items.WHEAT, 2), new ItemStack(Items.WHEAT_SEEDS, 1));
+						};
+						PENDING_CROPS.removeIf(p -> p.pos.equals(event.getPos()));
+						PENDING_CROPS.add(new PendingCropBreak(event.getPos(), spl.getUUID(), ent.getData().currentVillage(), ObVille.REPUTATION_CONFIG.crop_replant_grace_ticks, crimeSupplier));
 						broke.run();
+						return;
+					}
+
+					// Trusted rank allows breaking village blocks without penalty
+					if (ent.getData().IsWelcome()) {
+						broke.run();
+						return;
 					}
 					else if (block instanceof MelonBlock) {
 						if (ObVille.upsetNearby(spl, spl.blockPosition(), true, 0, ()->
@@ -495,6 +561,26 @@ public class ModEvents {
 					}
 				}
 			});
+
+			if (!PENDING_CROPS.isEmpty()) {
+				Iterator<PendingCropBreak> it = PENDING_CROPS.iterator();
+				while (it.hasNext()) {
+					PendingCropBreak pending = it.next();
+					if (pending.playerUUID.equals(player.getUUID())) {
+						pending.ticksLeft--;
+						if (pending.ticksLeft <= 0) {
+							it.remove();
+							if (!(serverlevel.getBlockState(pending.pos).getBlock() instanceof CropBlock)) {
+								ObVille.upsetNearby(player, pending.pos, true, 0, pending.crimeSupplier);
+							}
+						}
+					}
+				}
+			}
+
+			if (ObVille.hasRecruits() && ent.getData().IsExiled() && ent.getData().isInAnyVillage() && player.tickCount % 20 == 0) {
+				RecruitsCompat.angerNearbyAtExiled(player);
+			}
 
 			if (ent.getData().currentVillage() >= 0 && player.tickCount % 20 == 0) {
 				List<VillageLeader> list = player.level.getEntitiesOfClass(VillageLeader.class, player.getBoundingBox().inflate(64.0));
